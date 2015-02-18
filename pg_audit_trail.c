@@ -9,6 +9,9 @@ PG_MODULE_MAGIC;
 void		_PG_init(void);
 void		_PG_fini(void);
 
+/* Current nesting depth of ExecutorRun+ProcessUtility calls */
+static int	nested_level = 0;
+
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type prev_ExecutorRun = NULL;
 static ExecutorFinish_hook_type prev_ExecutorFinish = NULL;
@@ -63,21 +66,63 @@ _PG_fini(void)
 static void
 pgat_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
+	ereport(LOG,
+			(errmsg("%s", queryDesc->sourceText),
+			 errhidestmt(true)));
+
+	if (prev_ExecutorStart)
+		prev_ExecutorStart(queryDesc, eflags);
+	else
+		standard_ExecutorStart(queryDesc, eflags);
 }
 
 static void
 pgat_ExecutorRun(QueryDesc *queryDesc, ScanDirection direction, long count)
 {
+	nested_level++;
+	PG_TRY();
+	{
+		if (prev_ExecutorRun)
+			prev_ExecutorRun(queryDesc, direction, count);
+		else
+			standard_ExecutorRun(queryDesc, direction, count);
+		nested_level--;
+	}
+	PG_CATCH();
+	{
+		nested_level--;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 static void
 pgat_ExecutorFinish(QueryDesc *queryDesc)
 {
+	nested_level++;
+	PG_TRY();
+	{
+		if (prev_ExecutorFinish)
+			prev_ExecutorFinish(queryDesc);
+		else
+			standard_ExecutorFinish(queryDesc);
+		nested_level--;
+	}
+	PG_CATCH();
+	{
+		nested_level--;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
 
 static void
 pgat_ExecutorEnd(QueryDesc *queryDesc)
 {
+	if (prev_ExecutorEnd)
+		prev_ExecutorEnd(queryDesc);
+	else
+		standard_ExecutorEnd(queryDesc);
 }
 
 static void
@@ -85,4 +130,27 @@ pgat_ProcessUtility(Node *parsetree, const char *queryString,
 					ProcessUtilityContext context, ParamListInfo params,
 					DestReceiver *dest, char *completionTag)
 {
+	ereport(LOG,
+			(errmsg("%s", queryString),
+			 errhidestmt(true)));
+
+	nested_level++;
+	PG_TRY();
+	{
+		if (prev_ProcessUtility)
+			prev_ProcessUtility(parsetree, queryString,
+								context, params,
+								dest, completionTag);
+		else
+			standard_ProcessUtility(parsetree, queryString,
+									context, params,
+									dest, completionTag);
+		nested_level--;
+	}
+	PG_CATCH();
+	{
+		nested_level--;
+		PG_RE_THROW();
+	}
+	PG_END_TRY();
 }
