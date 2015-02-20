@@ -9,8 +9,14 @@ PG_MODULE_MAGIC;
 void		_PG_init(void);
 void		_PG_fini(void);
 
+/* GUC variables */
+static bool	pgat_log_nested_statements = false;
+
 /* Current nesting depth of ExecutorRun+ProcessUtility calls */
 static int	nested_level = 0;
+
+#define log_statements_enabled()	\
+	(nested_level == 0 || pgat_log_nested_statements)
 
 static ExecutorStart_hook_type prev_ExecutorStart = NULL;
 static ExecutorRun_hook_type prev_ExecutorRun = NULL;
@@ -34,6 +40,20 @@ static void pgat_ProcessUtility(Node *parsetree, const char *queryString,
 void
 _PG_init(void)
 {
+	/* Define custom GUC variables. */
+	DefineCustomBoolVariable("pg_audit_trail.log_nested_statements",
+							 "Log nested statements.",
+							 NULL,
+							 &pgat_log_nested_statements,
+							 false,
+							 PGC_SUSET,
+							 0,
+							 NULL,
+							 NULL,
+							 NULL);
+
+	EmitWarningsOnPlaceholders("pg_audit_trail");
+
 	/*
 	 * Install hooks.
 	 */
@@ -66,9 +86,12 @@ _PG_fini(void)
 static void
 pgat_ExecutorStart(QueryDesc *queryDesc, int eflags)
 {
-	ereport(LOG,
-			(errmsg("%s", queryDesc->sourceText),
-			 errhidestmt(true)));
+	if (log_statements_enabled())
+	{
+		ereport(LOG,
+				(errmsg("audit: %s", queryDesc->sourceText),
+				 errhidestmt(true)));
+	}
 
 	if (prev_ExecutorStart)
 		prev_ExecutorStart(queryDesc, eflags);
@@ -130,9 +153,12 @@ pgat_ProcessUtility(Node *parsetree, const char *queryString,
 					ProcessUtilityContext context, ParamListInfo params,
 					DestReceiver *dest, char *completionTag)
 {
-	ereport(LOG,
-			(errmsg("%s", queryString),
-			 errhidestmt(true)));
+	if (log_statements_enabled())
+	{
+		ereport(LOG,
+				(errmsg("audit: %s", queryString),
+				 errhidestmt(true)));
+	}
 
 	nested_level++;
 	PG_TRY();
